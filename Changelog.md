@@ -5,6 +5,7 @@ Features:
  * Optimizer: Remove unnecessary masking of the result of known short instructions (``ADDRESS``, ``CALLER``, ``ORIGIN`` and ``COINBASE``).
  * Type Checker: Deprecate the ``years`` unit denomination and raise a warning for it (or an error as experimental 0.5.0 feature).
  * Type Checker: Make literals (without explicit type casting) an error for tight packing as experimental 0.5.0 feature.
+ * SMTChecker: Support to integer and Bool state variables
 
 Bugfixes:
  * Type Checker: Warn about empty tuple components (this will turn into an error with version 0.5.0).
@@ -16,7 +17,6 @@ Features:
  * Build system: Support Ubuntu Bionic.
  * SMTChecker: Integration with CVC4 SMT solver
  * Syntax Checker: Warn about functions named "constructor".
- * SMTChecker: Support to integer and Bool state variables
 
 Bugfixes:
  * Type Checker: Improve error message for failed function overload resolution.
