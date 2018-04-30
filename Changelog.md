@@ -4,6 +4,7 @@ Features:
  * Build System: Update internal dependency of jsoncpp to 1.8.4, which introduces more strictness and reduces memory usage.
  * Code Generator: Use native shift instructions on target Constantinople.
  * Gas Estimator: Only explore paths with higher gas costs. This reduces accuracy but greatly improves the speed of gas estimation.
+ * General: Allow multiple variables to be declared using ``(uint a, uint b) = ...``.
  * Optimizer: Remove unnecessary masking of the result of known short instructions (``ADDRESS``, ``CALLER``, ``ORIGIN`` and ``COINBASE``).
  * Parser: Display nicer error messages by showing the actual tokens and not internal names.
  * Parser: Use the entire location of the token instead of only its starting position as source location for parser errors.
