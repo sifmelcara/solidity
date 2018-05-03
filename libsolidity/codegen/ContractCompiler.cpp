@@ -409,8 +409,6 @@ bool ContractCompiler::visit(VariableDeclaration const& _variableDeclaration)
 	CompilerContext::LocationSetter locationSetter(m_context, _variableDeclaration);
 
 	m_context.startFunction(_variableDeclaration);
-	m_breakTags.clear();
-	m_continueTags.clear();
 
 	if (_variableDeclaration.isConstant())
 		ExpressionCompiler(m_context, m_optimise).appendConstStateVariableAccessor(_variableDeclaration);
@@ -427,7 +425,7 @@ bool ContractCompiler::visit(FunctionDefinition const& _function)
 	m_context.startFunction(_function);
 
 	// stack upon entry: [return address] [arg0] [arg1] ... [argn]
-	// reserve additional slots: [retarg0] ... [retargm] [localvar0] ... [localvarp]
+	// reserve additional slots: [retarg0] ... [retargm]
 
 	unsigned parametersSize = CompilerUtils::sizeOnStack(_function.parameters());
 	if (!_function.isConstructor())
@@ -441,24 +439,27 @@ bool ContractCompiler::visit(FunctionDefinition const& _function)
 
 	for (ASTPointer<VariableDeclaration const> const& variable: _function.returnParameters())
 		appendStackVariableInitialisation(*variable);
-	for (VariableDeclaration const* localVariable: _function.localVariables())
-		appendStackVariableInitialisation(*localVariable);
 
 	if (_function.isConstructor())
 		if (auto c = m_context.nextConstructor(dynamic_cast<ContractDefinition const&>(*_function.scope())))
 			appendBaseConstructor(*c);
 
 	solAssert(m_returnTags.empty(), "");
-	m_breakTags.clear();
-	m_continueTags.clear();
-	m_stackCleanupForReturn = 0;
 	m_currentFunction = &_function;
 	m_modifierDepth = -1;
+	m_scopedVariables.clear();
+	m_loopScopedVariables.clear();
+	m_loops.clear();
+	m_breakTagsPops.clear();
+	m_returnTagsPops.clear();
 
-	appendModifierOrFunctionCode();
+	auto stackSurplus = appendModifierOrFunctionCode();
 
 	solAssert(m_returnTags.empty(), "");
 
+	eth::AssemblyItem endOfFunction = m_context.newTag();
+
+	m_context << endOfFunction;
 	// Now we need to re-shuffle the stack. For this we keep a record of the stack layout
 	// that shows the target positions of the elements, where "-1" denotes that this element needs
 	// to be removed from the stack.
@@ -467,14 +468,12 @@ bool ContractCompiler::visit(FunctionDefinition const& _function)
 
 	unsigned const c_argumentsSize = CompilerUtils::sizeOnStack(_function.parameters());
 	unsigned const c_returnValuesSize = CompilerUtils::sizeOnStack(_function.returnParameters());
-	unsigned const c_localVariablesSize = CompilerUtils::sizeOnStack(_function.localVariables());
 
 	vector<int> stackLayout;
 	stackLayout.push_back(c_returnValuesSize); // target of return address
 	stackLayout += vector<int>(c_argumentsSize, -1); // discard all arguments
 	for (unsigned i = 0; i < c_returnValuesSize; ++i)
 		stackLayout.push_back(i);
-	stackLayout += vector<int>(c_localVariablesSize, -1);
 
 	if (stackLayout.size() > 17)
 		BOOST_THROW_EXCEPTION(
@@ -495,16 +494,20 @@ bool ContractCompiler::visit(FunctionDefinition const& _function)
 		}
 	//@todo assert that everything is in place now
 
+
 	for (ASTPointer<VariableDeclaration const> const& variable: _function.parameters() + _function.returnParameters())
 		m_context.removeVariable(*variable);
-	for (VariableDeclaration const* localVariable: _function.localVariables())
-		m_context.removeVariable(*localVariable);
 
 	m_context.adjustStackOffset(-(int)c_returnValuesSize);
+
+	CompilerUtils(m_context).popStackSlots(stackSurplus);
 
 	/// The constructor and the fallback function doesn't to jump out.
 	if (!_function.isConstructor() && !_function.isFallback())
 		m_context.appendJump(eth::AssemblyItem::JumpType::OutOfFunction);
+
+	freeLocalFunctionVariables(endOfFunction);
+
 	return false;
 }
 
@@ -668,8 +671,7 @@ bool ContractCompiler::visit(WhileStatement const& _whileStatement)
 	CompilerContext::LocationSetter locationSetter(m_context, _whileStatement);
 	eth::AssemblyItem loopStart = m_context.newTag();
 	eth::AssemblyItem loopEnd = m_context.newTag();
-	m_continueTags.push_back(loopStart);
-	m_breakTags.push_back(loopEnd);
+	m_loops.push_back(&_whileStatement);
 
 	m_context << loopStart;
 
@@ -692,10 +694,12 @@ bool ContractCompiler::visit(WhileStatement const& _whileStatement)
 	}
 
 	m_context.appendJumpTo(loopStart);
-	m_context << loopEnd;
 
-	m_continueTags.pop_back();
-	m_breakTags.pop_back();
+	endVisitLoop(&_whileStatement);
+
+	freeLocalLoopVariables(loopStart);
+
+	m_context << loopEnd;
 
 	checker.check();
 	return false;
@@ -708,8 +712,7 @@ bool ContractCompiler::visit(ForStatement const& _forStatement)
 	eth::AssemblyItem loopStart = m_context.newTag();
 	eth::AssemblyItem loopEnd = m_context.newTag();
 	eth::AssemblyItem loopNext = m_context.newTag();
-	m_continueTags.push_back(loopNext);
-	m_breakTags.push_back(loopEnd);
+	m_loops.push_back(&_forStatement);
 
 	if (_forStatement.initializationExpression())
 		_forStatement.initializationExpression()->accept(*this);
@@ -733,10 +736,25 @@ bool ContractCompiler::visit(ForStatement const& _forStatement)
 		_forStatement.loopExpression()->accept(*this);
 
 	m_context.appendJumpTo(loopStart);
+
+	endVisitLoop(&_forStatement);
+
+	shared_ptr<eth::AssemblyItem> afterFreeing;
+	if (m_breakTagsPops.size() > 0)
+	{
+		afterFreeing = make_shared<eth::AssemblyItem>(m_context.newTag());
+		freeLocalLoopVariables(loopStart, afterFreeing);
+	}
+
 	m_context << loopEnd;
 
-	m_continueTags.pop_back();
-	m_breakTags.pop_back();
+	// For the case where no break is executed:
+	// loop initialization variables have to be freed
+	popBlockScopedVariables(&_forStatement);
+
+	// Location where the break tags jump to
+	if (afterFreeing)
+		m_context << *afterFreeing;
 
 	checker.check();
 	return false;
@@ -744,17 +762,33 @@ bool ContractCompiler::visit(ForStatement const& _forStatement)
 
 bool ContractCompiler::visit(Continue const& _continueStatement)
 {
-	CompilerContext::LocationSetter locationSetter(m_context, _continueStatement);
-	if (!m_continueTags.empty())
-		m_context.appendJumpTo(m_continueTags.back());
-	return false;
+	return visitBreakContinue(&_continueStatement);
 }
 
 bool ContractCompiler::visit(Break const& _breakStatement)
 {
-	CompilerContext::LocationSetter locationSetter(m_context, _breakStatement);
-	if (!m_breakTags.empty())
-		m_context.appendJumpTo(m_breakTags.back());
+	return visitBreakContinue(&_breakStatement);
+}
+
+bool ContractCompiler::visitBreakContinue(Statement const* _statement)
+{
+	CompilerContext::LocationSetter locationSetter(m_context, *_statement);
+	solAssert(!m_loops.empty(), "");
+	unsigned sizeOnStack = 0;
+	for (auto _decl : m_loopScopedVariables[m_loops.back()])
+		sizeOnStack += _decl->type()->sizeOnStack();
+	m_breakTagsPops.push_back(std::make_pair<unsigned, eth::AssemblyItem>(
+		unsigned(sizeOnStack),
+		m_context.newTag()
+	));
+	if (dynamic_cast<Break const*>(_statement))
+		m_context << 0;
+	else if (dynamic_cast<Continue const*>(_statement))
+		m_context << 1;
+	else
+		solAssert(false, "");
+	m_context.appendJumpTo(m_breakTagsPops.back().second);
+	m_context.adjustStackOffset(-1);
 	return false;
 }
 
@@ -780,10 +814,16 @@ bool ContractCompiler::visit(Return const& _return)
 		for (auto const& retVariable: boost::adaptors::reverse(returnParameters))
 			CompilerUtils(m_context).moveToStackVariable(*retVariable);
 	}
-	for (unsigned i = 0; i < m_stackCleanupForReturn; ++i)
-		m_context << Instruction::POP;
-	m_context.appendJumpTo(m_returnTags.back());
-	m_context.adjustStackOffset(m_stackCleanupForReturn);
+
+	unsigned sizeOnStack = 0;
+	for (auto _varDecl : m_scopedVariables)
+		for (auto _decl : _varDecl.second)
+			sizeOnStack += _decl->type()->sizeOnStack();
+	m_returnTagsPops.push_back(std::make_pair<unsigned, eth::AssemblyItem>(
+		unsigned(sizeOnStack),
+		m_context.newTag()
+	));
+	m_context.appendJumpTo(m_returnTagsPops.back().second);
 	return false;
 }
 
@@ -806,8 +846,14 @@ bool ContractCompiler::visit(EmitStatement const& _emit)
 
 bool ContractCompiler::visit(VariableDeclarationStatement const& _variableDeclarationStatement)
 {
-	StackHeightChecker checker(m_context);
 	CompilerContext::LocationSetter locationSetter(m_context, _variableDeclarationStatement);
+
+	// Local variable slots are reserved when their declaration is seen,
+	// and freed in the end of their scope.
+	for (auto _decl : _variableDeclarationStatement.declarations())
+		addScopedVariable(*_decl);
+
+	StackHeightChecker checker(m_context);
 	if (Expression const* expression = _variableDeclarationStatement.initialValue())
 	{
 		CompilerUtils utils(m_context);
@@ -857,6 +903,12 @@ bool ContractCompiler::visit(PlaceholderStatement const& _placeholderStatement)
 	return true;
 }
 
+void ContractCompiler::endVisit(Block const& _block)
+{
+	// Frees local variables declared in the scope of this block.
+	popBlockScopedVariables(&_block);
+}
+
 void ContractCompiler::appendMissingFunctions()
 {
 	while (Declaration const* function = m_context.nextFunctionToCompile())
@@ -871,7 +923,7 @@ void ContractCompiler::appendMissingFunctions()
 		m_context.appendInlineAssembly("{" + move(abiFunctions) + "}", {}, true);
 }
 
-void ContractCompiler::appendModifierOrFunctionCode()
+unsigned ContractCompiler::appendModifierOrFunctionCode()
 {
 	solAssert(m_currentFunction, "");
 	unsigned stackSurplus = 0;
@@ -891,7 +943,7 @@ void ContractCompiler::appendModifierOrFunctionCode()
 
 		// constructor call should be excluded
 		if (dynamic_cast<ContractDefinition const*>(modifierInvocation->name()->annotation().referencedDeclaration))
-			appendModifierOrFunctionCode();
+			stackSurplus = appendModifierOrFunctionCode();
 		else
 		{
 			ModifierDefinition const& nonVirtualModifier = dynamic_cast<ModifierDefinition const&>(
@@ -912,34 +964,22 @@ void ContractCompiler::appendModifierOrFunctionCode()
 					modifier.parameters()[i]->annotation().type
 				);
 			}
-			for (VariableDeclaration const* localVariable: modifier.localVariables())
-			{
-				addedVariables.push_back(localVariable);
-				appendStackVariableInitialisation(*localVariable);
-			}
 
-			stackSurplus =
-				CompilerUtils::sizeOnStack(modifier.parameters()) +
-				CompilerUtils::sizeOnStack(modifier.localVariables());
+			stackSurplus = CompilerUtils::sizeOnStack(modifier.parameters());
 			codeBlock = &modifier.body();
 		}
 	}
 
 	if (codeBlock)
 	{
-		m_returnTags.push_back(m_context.newTag());
-
 		codeBlock->accept(*this);
 
-		solAssert(!m_returnTags.empty(), "");
-		m_context << m_returnTags.back();
-		m_returnTags.pop_back();
-
-		CompilerUtils(m_context).popStackSlots(stackSurplus);
 		for (auto var: addedVariables)
 			m_context.removeVariable(*var);
 	}
 	m_modifierDepth--;
+
+	return stackSurplus;
 }
 
 void ContractCompiler::appendStackVariableInitialisation(VariableDeclaration const& _variable)
@@ -978,4 +1018,130 @@ eth::AssemblyPointer ContractCompiler::cloneRuntime() const
 	//@todo adjust for larger return values, make this dynamic.
 	a << u256(0x20) << u256(0) << Instruction::RETURN;
 	return make_shared<eth::Assembly>(a);
+}
+
+void ContractCompiler::addScopedVariable(VariableDeclaration const& _decl)
+{
+	// TODO check > 17
+	m_scopedVariables[_decl.scope()].push_back(&_decl);
+	if (!m_loops.empty())
+		m_loopScopedVariables[m_loops.back()].insert(&_decl);
+	appendStackVariableInitialisation(_decl);
+}
+
+void ContractCompiler::popBlockScopedVariables(ASTNode const* _node)
+{
+	for (auto _decl : m_scopedVariables[_node])
+	{
+		if (!m_loops.empty())
+			m_loopScopedVariables[m_loops.back()].erase(_decl);
+		CompilerContext::LocationSetter locationSetter(m_context, *_decl);
+		CompilerUtils(m_context).popStackElement(*_decl->type());
+		m_context.removeVariable(*_decl);
+	}
+	m_scopedVariables.erase(_node);
+}
+
+/**
+Whenever a break or continue is reached, it counts the number of
+stack slots that should be freed at that moment with respect to
+local variables, and creates a new tag that leads to the freeing
+of those variables.
+All the break/continue statements inside the same loop share this
+structure, such that each tag points to the according height.
+Moreover, before jumping to the tag, a break will push 0 and a
+continue will push 1, such that after popping the local variables
+the execution either goes on or back to the loop condition.
+Example: break [B1] needs to free 4 slots; break [B2] frees 1,
+and continue [C1] would free 3. The structure will look like:
+	...
+	/ * break B1 * /
+	0x0
+	jump(B1)
+	...
+	/ * break B2 * /
+	0x0
+	jump(B2)
+	...
+	/ * continue C1 * /
+	0x1
+	jump(C1)
+B1:
+	swap1
+	pop
+C1:
+	swap1
+	pop
+B2:
+	swap2
+	pop
+	pop
+	jumpi(LOOP_COND)
+	jump(END_LOOP)
+	...
+The swap instructions are needed to keep the flag break/continue.
+*/
+void ContractCompiler::freeLocalLoopVariables(
+	eth::AssemblyItem const& loopTag,
+	shared_ptr<eth::AssemblyItem> jumpTo
+)
+{
+	if (m_breakTagsPops.size() > 0)
+	{
+		// Block of pops with a tag for each break statement
+		sort(m_breakTagsPops.begin(), m_breakTagsPops.end());
+		m_context.adjustStackOffset(int(m_breakTagsPops.back().first) + 1);
+		auto outter = m_breakTagsPops.rbegin();
+		while (outter != m_breakTagsPops.rend())
+		{
+			auto inner = outter;
+			for (; inner != m_breakTagsPops.rend() && inner->first == outter->first; ++inner)
+				m_context << inner->second;
+			unsigned pops = (inner == m_breakTagsPops.rend()) ? outter->first : (outter->first - inner->first);
+			// This assumes that there will never be more than 16 pops
+			// TODO make sure
+			m_context << swapInstruction(pops);
+			while (pops--)
+				m_context << Instruction::POP;
+			outter = inner;
+		}
+		m_context.appendConditionalJumpTo(loopTag); 
+		m_breakTagsPops.clear();
+
+		if (jumpTo)
+			m_context.appendJumpTo(*jumpTo);
+	}
+}
+
+/*
+Same idea as freeLocalLoopVariables but does not conditionally jump.
+*/
+void ContractCompiler::freeLocalFunctionVariables(eth::AssemblyItem const& jumpTo)
+{
+	if (m_returnTagsPops.size() > 0)
+	{
+		// Block of pops with a tag for each break statement
+		sort(m_returnTagsPops.begin(), m_returnTagsPops.end());
+		m_context.adjustStackOffset(int(m_returnTagsPops.back().first));
+		auto outter = m_returnTagsPops.rbegin();
+		while (outter != m_returnTagsPops.rend())
+		{
+			auto inner = outter;
+			for (; inner != m_returnTagsPops.rend() && inner->first == outter->first; ++inner)
+				m_context << inner->second;
+			unsigned pops = (inner == m_returnTagsPops.rend()) ? outter->first : (outter->first - inner->first);
+			while (pops--)
+				m_context << Instruction::POP;
+			outter = inner;
+		}
+		m_returnTagsPops.clear();
+
+		m_context.appendJumpTo(jumpTo);
+	}
+}
+
+void ContractCompiler::endVisitLoop(BreakableStatement const* _loop)
+{
+	solAssert(!m_loops.empty() && m_loops.back() == _loop, "");
+	m_loops.pop_back();
 }
