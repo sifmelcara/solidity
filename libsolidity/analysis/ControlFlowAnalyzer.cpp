@@ -94,7 +94,7 @@ void ControlFlowAnalyzer::checkUnassignedStorageReturnValues(
 			// a reference is enough, checking whether there actually was an assignment might be overkill
 			for (auto assembly: node->block.inlineAssemblyStatements)
 				for (auto const& ref: assembly->annotation().externalReferences)
-					if(auto variableDeclaration = dynamic_cast<VariableDeclaration const*>(ref.second.declaration))
+					if (auto variableDeclaration = dynamic_cast<VariableDeclaration const*>(ref.second.declaration))
 						unassignedAtNode.erase(variableDeclaration);
 		}
 

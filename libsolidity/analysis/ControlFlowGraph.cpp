@@ -17,6 +17,8 @@
 
 #include <libsolidity/analysis/ControlFlowGraph.h>
 
+#include <boost/range/adaptor/reversed.hpp>
+
 #include <algorithm>
 
 using namespace std;
@@ -99,7 +101,7 @@ private:
 	std::array<CFGNode*, n> splitFlow()
 	{
 		std::array<CFGNode*, n> result;
-		for(auto& node: result)
+		for (auto& node: result)
 		{
 			node = m_cfg.newNode();
 			connect(m_currentNode, node);
@@ -373,14 +375,12 @@ bool ControlFlowParser::visit(PlaceholderStatement const&)
 {
 	solAssert(!!m_currentNode, "");
 	solAssert(!!m_cfg.m_currentModifierFlow, "");
-	auto placeholderEntry = newLabel();
-	auto placeholderExit = newLabel();
 
-	connect(m_currentNode, placeholderEntry);
+	connect(m_currentNode, m_cfg.m_currentModifierFlow->placeholderEntry);
 
-	m_cfg.m_currentModifierFlow->placeholders.emplace_back(placeholderEntry, placeholderExit);
+	m_currentNode = newLabel();
 
-	m_currentNode = placeholderExit;
+	connect(m_cfg.m_currentModifierFlow->placeholderExit, m_currentNode);
 	return false;
 }
 
@@ -431,6 +431,7 @@ bool ControlFlowParser::visit(FunctionCall const& _functionCall)
 bool CFG::constructFlow(ASTNode const& _astRoot)
 {
 	_astRoot.accept(*this);
+	applyModifiers();
 	return Error::containsOnlyWarnings(m_errorReporter.errors());
 }
 
@@ -438,6 +439,8 @@ bool CFG::constructFlow(ASTNode const& _astRoot)
 bool CFG::visit(ModifierDefinition const& _modifier)
 {
 	m_currentModifierFlow = make_shared<ModifierFlow>(newNode(), newNode(), newNode());
+	m_currentModifierFlow->placeholderEntry = newNode();
+	m_currentModifierFlow->placeholderExit = newNode();
 	m_currentFunctionFlow = std::static_pointer_cast<FunctionFlow>(m_currentModifierFlow);
 	m_modifierControlFlow[&_modifier] = m_currentModifierFlow;
 
@@ -451,8 +454,6 @@ bool CFG::visit(ModifierDefinition const& _modifier)
 
 bool CFG::visit(FunctionDefinition const& _function)
 {
-	// TODO: insert modifiers into function control flow after parsing the AST.
-
 	m_currentFunctionFlow = make_shared<FunctionFlow>(newNode(), newNode(), newNode());
 	m_functionControlFlow[&_function] = m_currentFunctionFlow;
 
@@ -473,4 +474,81 @@ CFGNode* CFG::newNode()
 {
 	m_nodes.emplace_back(new CFGNode());
 	return m_nodes.back().get();
+}
+
+void CFG::applyModifiers()
+{
+	for (auto const& function: m_functionControlFlow)
+	{
+		for (auto const& modifierInvocation: boost::adaptors::reverse(function.first->modifiers()))
+		{
+			if (auto modifierDefinition = dynamic_cast<ModifierDefinition const*>(
+				modifierInvocation->name()->annotation().referencedDeclaration
+			))
+			{
+				solAssert(m_modifierControlFlow.count(modifierDefinition), "");
+				auto modifierFlow = m_modifierControlFlow[modifierDefinition];
+				applyModifierFlowToFunctionFlow(*modifierFlow, function.second);
+			}
+		}
+	}
+}
+
+void CFG::applyModifierFlowToFunctionFlow(
+	ModifierFlow const& _modifierFlow,
+	std::shared_ptr<FunctionFlow> _functionFlow
+)
+{
+	map<CFGNode*, CFGNode*> oldToNew;
+
+	// inherit the exception node of the function
+	oldToNew[_modifierFlow.exception] = _functionFlow->exception;
+
+	// replace the placeholder nodes by the function entry and exit
+	oldToNew[_modifierFlow.placeholderEntry] = _functionFlow->entry;
+	oldToNew[_modifierFlow.placeholderExit] = _functionFlow->exit;
+
+	stack<CFGNode*> nodesToClone;
+	nodesToClone.push(_modifierFlow.entry);
+
+	// map the modifier entry to a new node that will become the new function entry
+	oldToNew[_modifierFlow.entry] = newNode();
+
+	while (!nodesToClone.empty())
+	{
+		auto srcNode = nodesToClone.top();
+		nodesToClone.pop();
+
+		solAssert(oldToNew.count(srcNode), "");
+
+		auto dstNode = oldToNew[srcNode];
+
+		dstNode->block = srcNode->block;
+		for (auto& entry: srcNode->entries)
+		{
+			if (!oldToNew.count(entry))
+			{
+				oldToNew[entry] = newNode();
+				nodesToClone.push(entry);
+			}
+			dstNode->entries.emplace_back(oldToNew[entry]);
+		}
+		for (auto& exit: srcNode->exits)
+		{
+			if (!oldToNew.count(exit))
+			{
+				oldToNew[exit] = newNode();
+				nodesToClone.push(exit);
+			}
+			dstNode->exits.emplace_back(oldToNew[exit]);
+		}
+	}
+
+	// if the modifier control flow never reached its exit node,
+	// we need to create a new (disconnected) exit node now
+	if (!oldToNew.count(_modifierFlow.exit))
+		oldToNew[_modifierFlow.exit] = newNode();
+
+	_functionFlow->entry = oldToNew[_modifierFlow.entry];
+	_functionFlow->exit = oldToNew[_modifierFlow.exit];
 }

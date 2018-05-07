@@ -86,13 +86,9 @@ struct ModifierFlow : FunctionFlow
 {
 	template<typename... Args>
 	ModifierFlow(Args&&... args): FunctionFlow(std::forward<Args>(args)...) {}
-	/// Placeholder cuts. List of pairs of disconnected CFGNode's
-	/// indicating the location of a placeholder.
-	/// E.g. the control flow of a function with a single modifier
-	/// is the control flow of the modifier in which the first node
-	/// of each placeholder is connected to the function's entry node
-	/// and the second node of each placeholder to the function's exit node.
-	std::vector<std::pair<CFGNode*, CFGNode*>> placeholders;
+
+	CFGNode* placeholderEntry = nullptr;
+	CFGNode* placeholderExit = nullptr;
 };
 
 class CFG: private ASTConstVisitor
@@ -108,6 +104,16 @@ public:
 	FunctionFlow const& functionFlow(FunctionDefinition const& _function) const;
 private:
 	CFGNode* newNode();
+
+	/// Initially the control flow for all functions *without* modifiers and for
+	/// all modifiers is constructed. Afterwards the control flow of functions
+	/// is adjusted by applying all modifiers.
+	void applyModifiers();
+
+	void applyModifierFlowToFunctionFlow(
+		ModifierFlow const& _modifierFlow,
+		std::shared_ptr<FunctionFlow> _functionFlow
+	);
 
 	ErrorReporter& m_errorReporter;
 

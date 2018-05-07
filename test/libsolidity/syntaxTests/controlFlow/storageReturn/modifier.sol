@@ -3,13 +3,27 @@ contract C {
         _;
         revert();
     }
+    modifier ifFlag(bool flag) {
+        if (flag)
+            _;
+    }
     struct S { uint a; }
     S s;
-    // currently this is expected to warn, but this should be changed in the future
-    // (modifiers should be considered in the function control flow graph)
     function f(bool flag) revertIfNoReturn() internal view returns(S storage) {
         if (flag) return s;
     }
+    function g(bool flag) ifFlag(flag) internal view returns(S storage) {
+        return s; // warning expected
+    }
+
+    function h(bool flag) ifFlag(flag) revertIfNoReturn() internal view returns(S storage) {
+        return s; // warning expected
+    }
+    function i(bool flag) revertIfNoReturn() ifFlag(flag) internal view returns(S storage) {
+        return s;
+    }
+
 }
 // ----
-// Warning: (342-343): uninitialized storage pointer may be returned
+// Warning: (363-364): uninitialized storage pointer may be returned
+// Warning: (501-502): uninitialized storage pointer may be returned
