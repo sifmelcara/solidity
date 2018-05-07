@@ -537,7 +537,7 @@ bigint IntegerType::maxValue() const
 		return (bigint(1) << m_bits) - 1;
 }
 
-TypePointer IntegerType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult IntegerType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	if (
 		_other->category() != Category::RationalNumber &&
@@ -678,7 +678,7 @@ bigint FixedPointType::minIntegerValue() const
 		return bigint(0);
 }
 
-TypePointer FixedPointType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult FixedPointType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	auto commonType = Type::commonType(shared_from_this(), _other);
 
@@ -911,7 +911,7 @@ TypePointer RationalNumberType::unaryOperatorResult(Token::Value _operator) cons
 	return make_shared<RationalNumberType>(value);
 }
 
-TypePointer RationalNumberType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult RationalNumberType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	if (_other->category() == Category::Integer || _other->category() == Category::FixedPoint)
 	{
@@ -1084,7 +1084,7 @@ TypePointer RationalNumberType::binaryOperatorResult(Token::Value _operator, Typ
 		if (value.numerator() != 0 && max(mostSignificantBit(abs(value.numerator())), mostSignificantBit(abs(value.denominator()))) > 4096)
 			return TypePointer();
 
-		return make_shared<RationalNumberType>(value);
+		return TypeResult(make_shared<RationalNumberType>(value));
 	}
 }
 
@@ -1297,7 +1297,7 @@ TypePointer FixedBytesType::unaryOperatorResult(Token::Value _operator) const
 	return TypePointer();
 }
 
-TypePointer FixedBytesType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult FixedBytesType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	if (Token::isShiftOp(_operator))
 	{
@@ -1313,7 +1313,7 @@ TypePointer FixedBytesType::binaryOperatorResult(Token::Value _operator, TypePoi
 
 	// FixedBytes can be compared and have bitwise operators applied to them
 	if (Token::isCompareOp(_operator) || Token::isBitOp(_operator))
-		return commonType;
+		return TypeResult(commonType);
 
 	return TypePointer();
 }
@@ -1354,7 +1354,7 @@ TypePointer BoolType::unaryOperatorResult(Token::Value _operator) const
 	return (_operator == Token::Not) ? shared_from_this() : TypePointer();
 }
 
-TypePointer BoolType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult BoolType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	if (category() != _other->category())
 		return TypePointer();
@@ -2564,7 +2564,7 @@ TypePointer FunctionType::unaryOperatorResult(Token::Value _operator) const
 	return TypePointer();
 }
 
-TypePointer FunctionType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
+TypeResult FunctionType::binaryOperatorResult(Token::Value _operator, TypePointer const& _other) const
 {
 	if (_other->category() != category() || !(_operator == Token::Equal || _operator == Token::NotEqual))
 		return TypePointer();

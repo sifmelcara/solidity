@@ -1364,20 +1364,28 @@ bool TypeChecker::visit(Assignment const& _assignment)
 	{
 		// compound assignment
 		_assignment.rightHandSide().accept(*this);
-		TypePointer resultType = t->binaryOperatorResult(
+		TypeResult result = t->binaryOperatorResult(
 			Token::AssignmentToBinaryOp(_assignment.assignmentOperator()),
 			type(_assignment.rightHandSide())
 		);
-		if (!resultType || *resultType != *t)
-			m_errorReporter.typeError(
-				_assignment.location(),
-				"Operator " +
-				string(Token::toString(_assignment.assignmentOperator())) +
-				" not compatible with types " +
-				t->toString() +
-				" and " +
-				type(_assignment.rightHandSide())->toString()
-			);
+		if (!result.value() || *result.value() != *t)
+		{
+			if (result.message().empty())
+				m_errorReporter.typeError(
+					_assignment.location(),
+					"Operator " +
+					string(Token::toString(_assignment.assignmentOperator())) +
+					" not compatible with types " +
+					t->toString() +
+					" and " +
+					type(_assignment.rightHandSide())->toString()
+				);
+			else
+				m_errorReporter.typeError(
+					_assignment.location(),
+					result.message()
+				);
+		}
 	}
 	return false;
 }
@@ -1510,18 +1518,25 @@ void TypeChecker::endVisit(BinaryOperation const& _operation)
 {
 	TypePointer const& leftType = type(_operation.leftExpression());
 	TypePointer const& rightType = type(_operation.rightExpression());
-	TypePointer commonType = leftType->binaryOperatorResult(_operation.getOperator(), rightType);
+	TypeResult result = leftType->binaryOperatorResult(_operation.getOperator(), rightType);
+	TypePointer commonType = result.value();
 	if (!commonType)
 	{
-		m_errorReporter.typeError(
-			_operation.location(),
-			"Operator " +
-			string(Token::toString(_operation.getOperator())) +
-			" not compatible with types " +
-			leftType->toString() +
-			" and " +
-			rightType->toString()
-		);
+		if (result.message().empty())
+			m_errorReporter.typeError(
+				_operation.location(),
+				"Operator " +
+				string(Token::toString(_operation.getOperator())) +
+				" not compatible with types " +
+				leftType->toString() +
+				" and " +
+				rightType->toString()
+			);
+		else
+			m_errorReporter.typeError(
+				_operation.location(),
+				result.message()
+			);
 		commonType = leftType;
 	}
 	_operation.annotation().commonType = commonType;
