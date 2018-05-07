@@ -32,9 +32,8 @@ namespace solidity
 {
 
 /// Basic Control Flow Block.
-/// Basic block of control flow. Consists of AST nodes
-/// contained in a block in which control flow is always
-/// linear.
+/// Basic block of control flow. Consists of a set of AST nodes
+/// for which control flow is always linear.
 struct ControlFlowBlock
 {
 	/// All variable declarations executed in this control flow block.
@@ -66,7 +65,6 @@ struct CFGNode
 /// Describes the control flow of a function.
 struct FunctionFlow
 {
-	// Constructor.
 	FunctionFlow(CFGNode* _entry, CFGNode* _exit, CFGNode* _exception):
 		entry(_entry), exit(_exit), exception(_exception) {}
 	/// Entry node. Control flow of the function starts here.
@@ -86,7 +84,6 @@ struct FunctionFlow
 /// Inherits all members from FunctionFlow.
 struct ModifierFlow : FunctionFlow
 {
-	/// Constructor. Forwards arguments to FunctionFlow constructor.
 	template<typename... Args>
 	ModifierFlow(Args&&... args): FunctionFlow(std::forward<Args>(args)...) {}
 	/// Placeholder cuts. List of pairs of disconnected CFGNode's
@@ -105,49 +102,32 @@ public:
 
 	bool constructFlow(ASTNode const& _astRoot);
 
-	virtual bool visit(BinaryOperation const& _operation) override;
-	virtual bool visit(Conditional const& _conditional) override;
 	virtual bool visit(ModifierDefinition const& _modifier) override;
-	virtual void endVisit(ModifierDefinition const&) override;
 	virtual bool visit(FunctionDefinition const& _function) override;
-	virtual void endVisit(FunctionDefinition const&) override;
-	virtual bool visit(IfStatement const& _ifStatement) override;
-	virtual bool visit(ForStatement const& _forStatement) override;
-	virtual bool visit(WhileStatement const& _whileStatement) override;
-	virtual bool visit(Break const&) override;
-	virtual bool visit(Continue const&) override;
-	virtual bool visit(Throw const&) override;
-	virtual bool visit(Block const&) override;
-	virtual void endVisit(Block const&) override;
-	virtual bool visit(Return const& _return) override;
-	virtual bool visit(PlaceholderStatement const&) override;
-	virtual bool visit(FunctionCall const& _functionCall) override;
 
 	FunctionFlow const& functionFlow(FunctionDefinition const& _function) const;
-
-protected:
-	virtual bool visitNode(ASTNode const& node) override;
-
-
 private:
 	CFGNode* newNode();
-	static void addEdge(CFGNode* _from, CFGNode* _to);
 
 	ErrorReporter& m_errorReporter;
 
-	CFGNode* m_returnJump = nullptr;
-	CFGNode* m_exceptionJump = nullptr;
-	std::stack<CFGNode*> m_breakJumps;
-	std::stack<CFGNode*> m_continueJumps;
-
+	/// Maps function definitions to their control flow.
 	std::map<FunctionDefinition const*, std::shared_ptr<FunctionFlow>> m_functionControlFlow;
-	std::shared_ptr<FunctionFlow> m_currentFunctionFlow;
-
+	/// Maps modifier definitions to their control flow.
 	std::map<ModifierDefinition const*, std::shared_ptr<ModifierFlow>> m_modifierControlFlow;
+
+	/// List of nodes.
+	/// All nodes allocated during the construction of the control flow graph
+	/// are owned by the CFG class and stored here.
+	std::vector<std::unique_ptr<CFGNode>> m_nodes;
+
+	/// The control flow of the function that is currently parsed.
+	/// Note: this can also be a ModifierFlow
+	std::shared_ptr<FunctionFlow> m_currentFunctionFlow;
+	/// The control flow of the modifier that is currently parsed.
 	std::shared_ptr<ModifierFlow> m_currentModifierFlow;
 
-	CFGNode* m_currentNode = nullptr;
-	std::vector<std::unique_ptr<CFGNode>> m_nodes;
+	friend class ControlFlowParser;
 };
 
 }

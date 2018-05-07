@@ -22,381 +22,455 @@
 using namespace std;
 using namespace dev::solidity;
 
-bool CFG::constructFlow(ASTNode const& _astRoot)
+namespace dev
 {
-	_astRoot.accept(*this);
-	return Error::containsOnlyWarnings(m_errorReporter.errors());
+namespace solidity
+{
+
+/// Helper class that parses the control flow of a non-top-level ASTNode.
+class ControlFlowParser: private ASTConstVisitor
+{
+public:
+	/// Connects @a _entry and @a _exit by inserting the control flow of @a _node in between.
+	static void createFlowFromTo(CFG& _cfg, CFGNode* _entry, CFGNode* _exit, ASTNode const& _node)
+	{
+		ControlFlowParser parser(_cfg, _entry);
+		parser.appendControlFlow(_node);
+		connect(parser.m_currentNode, _exit);
+	}
+
+private:
+	explicit ControlFlowParser(CFG& _cfg, CFGNode* _entry):
+		m_cfg(_cfg), m_currentNode(_entry) {}
+
+	virtual bool visit(BinaryOperation const& _operation) override;
+	virtual bool visit(Conditional const& _conditional) override;
+	virtual bool visit(IfStatement const& _ifStatement) override;
+	virtual bool visit(ForStatement const& _forStatement) override;
+	virtual bool visit(WhileStatement const& _whileStatement) override;
+	virtual bool visit(Break const&) override;
+	virtual bool visit(Continue const&) override;
+	virtual bool visit(Throw const&) override;
+	virtual bool visit(Block const&) override;
+	virtual void endVisit(Block const&) override;
+	virtual bool visit(Return const& _return) override;
+	virtual bool visit(PlaceholderStatement const&) override;
+	virtual bool visit(FunctionCall const& _functionCall) override;
+
+
+	/// Appends the control flow of @a _node to the current control flow.
+	void appendControlFlow(ASTNode const& _node)
+	{
+		_node.accept(*this);
+	}
+
+	/// Starts at @a _entry and parses the control flow of @a _node.
+	/// @returns The node at which the parsed control flow ends.
+	/// m_currentNode is not affected (it is saved and restored).
+	CFGNode* createFlow(CFGNode* _entry, ASTNode const& _node)
+	{
+		auto oldCurrentNode = m_currentNode;
+		m_currentNode = _entry;
+		appendControlFlow(_node);
+		auto endNode = m_currentNode;
+		m_currentNode = oldCurrentNode;
+		return endNode;
+	}
+
+	/// Creates an arc from @a _from to @a _to.
+	static void connect(CFGNode* _from, CFGNode* _to)
+	{
+		solAssert(_from, "");
+		solAssert(_to, "");
+		_from->exits.push_back(_to);
+		_to->entries.push_back(_from);
+	}
+
+
+protected:
+	virtual bool visitNode(ASTNode const& node) override;
+
+private:
+
+	/// Splits the control flow starting at the current node into n paths.
+	/// m_currentNode is set to nullptr and has to be set manually or
+	/// using mergeFlow later.
+	template<size_t n>
+	std::array<CFGNode*, n> splitFlow()
+	{
+		std::array<CFGNode*, n> result;
+		for(auto& node: result)
+		{
+			node = m_cfg.newNode();
+			connect(m_currentNode, node);
+		}
+		m_currentNode = nullptr;
+		return result;
+	}
+
+	/// Merges the control flow of @a _nodes to @a _endNode.
+	/// If @a _endNode is nullptr, a new node is creates and used as end node.
+	/// Sets the merge destination as current node.
+	/// Note: @a _endNode may be one of the nodes in @a _nodes.
+	template<size_t n>
+	void mergeFlow(std::array<CFGNode*, n> const& _nodes, CFGNode* _endNode = nullptr)
+	{
+		CFGNode* mergeDestination = (_endNode == nullptr) ? m_cfg.newNode() : _endNode;
+		for (auto& node: _nodes)
+			if (node != mergeDestination)
+				connect(node, mergeDestination);
+		m_currentNode = mergeDestination;
+	}
+
+	CFGNode* newLabel()
+	{
+		return m_cfg.newNode();
+	}
+	CFGNode* createLabelHere()
+	{
+		auto label = m_cfg.newNode();
+		connect(m_currentNode, label);
+		m_currentNode = label;
+		return label;
+	}
+	void placeAndConnectLabel(CFGNode *_node)
+	{
+		connect(m_currentNode, _node);
+		m_currentNode = _node;
+	}
+
+	CFG& m_cfg;
+	CFGNode* m_currentNode = nullptr;
+
+	/// The current jump destination of break Statements.
+	CFGNode* m_breakJump = nullptr;
+	/// The current jump destination of continue Statements.
+	CFGNode* m_continueJump = nullptr;
+
+	/// Helper class that replaces the break and continue jump destinations for the
+	/// current scope and restores the originals at the end of the scope.
+	class BreakContinueScope
+	{
+	public:
+		BreakContinueScope(ControlFlowParser& _parser, CFGNode* _breakJump, CFGNode* _continueJump):
+			m_parser(_parser), m_origBreakJump(_parser.m_breakJump), m_origContinueJump(_parser.m_continueJump)
+		{
+			m_parser.m_breakJump = _breakJump;
+			m_parser.m_continueJump = _continueJump;
+		}
+		~BreakContinueScope()
+		{
+			m_parser.m_breakJump = m_origBreakJump;
+			m_parser.m_continueJump = m_origContinueJump;
+		}
+	private:
+		ControlFlowParser& m_parser;
+		CFGNode* m_origBreakJump;
+		CFGNode* m_origContinueJump;
+	};
+
+	friend class BreakContinueScope;
+};
+
+}
 }
 
-bool CFG::visit(BinaryOperation const& _operation)
+bool ControlFlowParser::visit(BinaryOperation const& _operation)
 {
-	// binary operations can occur outside functions and modifiers,
-	// e.g. in constant declarations
-	if (m_currentNode)
+	solAssert(!!m_currentNode, "");
+
+	switch(_operation.getOperator())
 	{
-		switch(_operation.getOperator())
+		case Token::Or:
+		case Token::And:
 		{
-			case Token::Or:
-			case Token::And:
-			{
-				_operation.leftExpression().accept(*this);
+			appendControlFlow(_operation.leftExpression());
 
-				auto opRight = newNode();
-				auto afterOp = newNode();
+			auto nodes = splitFlow<2>();
+			nodes[0] = createFlow(nodes[0], _operation.rightExpression());
+			mergeFlow(nodes, nodes[1]);
 
-				addEdge(m_currentNode, afterOp);
-				addEdge(m_currentNode, opRight);
-
-				m_currentNode = opRight;
-				_operation.rightExpression().accept(*this);
-				addEdge(m_currentNode, afterOp);
-
-				m_currentNode = afterOp;
-
-				return false;
-			}
-			default:
-				break;
+			return false;
 		}
+		default:
+			break;
 	}
 	return ASTConstVisitor::visit(_operation);
 }
 
-bool CFG::visit(Conditional const& _conditional)
-{
-	// conditional expressions can occur outside functions and modifiers,
-	// e.g. in constant declarations
-	if (m_currentNode)
-	{
-		_conditional.condition().accept(*this);
-
-		auto trueNode = newNode();
-		auto falseNode = newNode();
-		auto afterCond = newNode();
-
-		addEdge(m_currentNode, trueNode);
-		addEdge(m_currentNode, falseNode);
-
-		m_currentNode = trueNode;
-		_conditional.trueExpression().accept(*this);
-		addEdge(m_currentNode, afterCond);
-
-		m_currentNode = falseNode;
-		_conditional.falseExpression().accept(*this);
-		addEdge(m_currentNode, afterCond);
-
-		m_currentNode = afterCond;
-		return false;
-	}
-	else
-		return ASTConstVisitor::visit(_conditional);
-}
-
-bool CFG::visit(ModifierDefinition const& _modifier)
-{
-	solAssert(!m_currentNode, "");
-	solAssert(!m_currentFunctionFlow, "");
-	m_currentModifierFlow = make_shared<ModifierFlow>(newNode(), newNode(), newNode());
-	m_modifierControlFlow[&_modifier] = m_currentModifierFlow;
-	m_currentNode = m_currentModifierFlow->entry;
-	m_returnJump = m_currentModifierFlow->exit;
-	m_exceptionJump = m_currentModifierFlow->exception;
-	return true;
-}
-
-void CFG::endVisit(ModifierDefinition const&)
+bool ControlFlowParser::visit(Conditional const& _conditional)
 {
 	solAssert(!!m_currentNode, "");
-	solAssert(!!m_currentModifierFlow, "");
-	solAssert(m_currentModifierFlow->exit, "");
-	addEdge(m_currentNode, m_currentModifierFlow->exit);
-	m_currentNode = nullptr;
-	m_returnJump = nullptr;
-	m_exceptionJump = nullptr;
-	m_currentModifierFlow.reset();
+
+	_conditional.condition().accept(*this);
+
+	auto nodes = splitFlow<2>();
+
+	nodes[0] = createFlow(nodes[0], _conditional.trueExpression());
+	nodes[1] = createFlow(nodes[1], _conditional.falseExpression());
+
+	mergeFlow(nodes);
+
+	return false;
 }
 
-bool CFG::visit(FunctionDefinition const& _function)
-{
-	// TODO: insert modifiers into function control flow later
-
-	solAssert(!m_currentNode, "");
-	solAssert(!m_currentFunctionFlow, "");
-
-	m_currentFunctionFlow = make_shared<FunctionFlow>(newNode(), newNode(), newNode());
-	m_functionControlFlow[&_function] = m_currentFunctionFlow;
-
-	m_currentNode = m_currentFunctionFlow->entry;
-	m_returnJump = m_currentFunctionFlow->exit;
-	m_exceptionJump = m_currentFunctionFlow->exception;
-	return true;
-}
-
-void CFG::endVisit(FunctionDefinition const&)
-{
-	solAssert(!!m_currentNode, "");
-	solAssert(!!m_currentFunctionFlow, "");
-	solAssert(m_currentFunctionFlow->entry, "");
-	solAssert(m_currentFunctionFlow->exit, "");
-	addEdge(m_currentNode, m_currentFunctionFlow->exit);
-
-	m_currentNode = nullptr;
-	m_returnJump = nullptr;
-	m_exceptionJump = nullptr;
-	m_currentFunctionFlow.reset();
-}
-
-bool CFG::visit(IfStatement const& _ifStatement)
+bool ControlFlowParser::visit(IfStatement const& _ifStatement)
 {
 	solAssert(!!m_currentNode, "");
 
 	_ifStatement.condition().accept(*this);
 
-	auto beforeBranch = m_currentNode;
-	auto afterBranch = newNode();
-
-	m_currentNode = newNode();
-	addEdge(beforeBranch, m_currentNode);
-	_ifStatement.trueStatement().accept(*this);
-	addEdge(m_currentNode, afterBranch);
-
 	if (_ifStatement.falseStatement())
 	{
-		m_currentNode = newNode();
-		addEdge(beforeBranch, m_currentNode);
-		_ifStatement.falseStatement()->accept(*this);
-		addEdge(m_currentNode, afterBranch);
+		auto nodes = splitFlow<2>();
+		nodes[0] = createFlow(nodes[0], _ifStatement.trueStatement());
+		nodes[1] = createFlow(nodes[1], *_ifStatement.falseStatement());
+		mergeFlow(nodes);
 	}
 	else
-		addEdge(beforeBranch, afterBranch);
-
-
-	m_currentNode = afterBranch;
+	{
+		auto nodes = splitFlow<2>();
+		nodes[0] = createFlow(nodes[0], _ifStatement.trueStatement());
+		mergeFlow(nodes, nodes[1]);
+	}
 
 	return false;
 }
 
-bool CFG::visit(ForStatement const& _forStatement)
+bool ControlFlowParser::visit(ForStatement const& _forStatement)
 {
 	solAssert(!!m_currentNode, "");
 
 	if (auto initializationExpression = _forStatement.initializationExpression())
 		initializationExpression->accept(*this);
 
-	auto condition = newNode();
-	auto body = newNode();
-	auto loopExpression = newNode();
-	auto afterFor = newNode();
-
-	addEdge(m_currentNode, condition);
-	m_currentNode = condition;
+	auto condition = createLabelHere();
 
 	if (auto conditionExpression = _forStatement.condition())
-		conditionExpression->accept(*this);
+		appendControlFlow(*conditionExpression);
 
-	addEdge(m_currentNode, body);
-	addEdge(m_currentNode, afterFor);
+	auto loopExpression = newLabel();
+	auto nodes = splitFlow<2>();
+	auto& afterFor = nodes[1];
+	m_currentNode = nodes[0];
 
-	m_currentNode = body;
-	m_breakJumps.push(afterFor);
-	m_continueJumps.push(loopExpression);
-	_forStatement.body().accept(*this);
-	m_breakJumps.pop();
-	m_continueJumps.pop();
+	{
+		BreakContinueScope scope(*this, afterFor, loopExpression);
+		appendControlFlow(_forStatement.body());
+	}
 
-	addEdge(m_currentNode, loopExpression);
-	m_currentNode = loopExpression;
+	placeAndConnectLabel(loopExpression);
 
 	if (auto expression = _forStatement.loopExpression())
-		expression->accept(*this);
+		appendControlFlow(*expression);
 
-	addEdge(m_currentNode, condition);
-
+	connect(m_currentNode, condition);
 	m_currentNode = afterFor;
 
 	return false;
 }
 
-bool CFG::visit(WhileStatement const& _whileStatement)
+bool ControlFlowParser::visit(WhileStatement const& _whileStatement)
 {
 	solAssert(!!m_currentNode, "");
 
-	auto afterWhile = newNode();
 	if (_whileStatement.isDoWhile())
 	{
-		auto whileBody = newNode();
+		auto afterWhile = newLabel();
+		auto whileBody = createLabelHere();
 
-		addEdge(m_currentNode, whileBody);
-		m_currentNode = whileBody;
+		{
+			BreakContinueScope scope(*this, afterWhile, whileBody);
+			appendControlFlow(_whileStatement.body());
+		}
+		appendControlFlow(_whileStatement.condition());
 
-		m_continueJumps.push(whileBody);
-		m_breakJumps.push(afterWhile);
-		_whileStatement.body().accept(*this);
-		m_breakJumps.pop();
-		m_continueJumps.pop();
-		_whileStatement.condition().accept(*this);
-
-		addEdge(m_currentNode, afterWhile);
-		addEdge(m_currentNode, whileBody);
+		connect(m_currentNode, whileBody);
+		placeAndConnectLabel(afterWhile);
 	}
 	else
 	{
-		auto whileCondition = newNode();
-		addEdge(m_currentNode, whileCondition);
-		_whileStatement.condition().accept(*this);
-		auto whileBody = newNode();
-		addEdge(m_currentNode, whileBody);
-		addEdge(m_currentNode, afterWhile);
+		auto whileCondition = createLabelHere();
+
+		appendControlFlow(_whileStatement.condition());
+
+		auto nodes = splitFlow<2>();
+
+		auto& whileBody = nodes[0];
+		auto& afterWhile = nodes[1];
 
 		m_currentNode = whileBody;
-		m_breakJumps.push(afterWhile);
-		m_continueJumps.push(whileCondition);
-		_whileStatement.body().accept(*this);
-		m_breakJumps.pop();
-		m_continueJumps.pop();
+		{
+			BreakContinueScope scope(*this, afterWhile, whileCondition);
+			appendControlFlow(_whileStatement.body());
+		}
 
-		addEdge(m_currentNode, whileCondition);
+		connect(m_currentNode, whileCondition);
 
+		m_currentNode = afterWhile;
 	}
 
-	m_currentNode = afterWhile;
 
 	return false;
 }
 
-bool CFG::visit(Break const&)
+bool ControlFlowParser::visit(Break const&)
 {
 	solAssert(!!m_currentNode, "");
-	solAssert(!m_breakJumps.empty(), "");
-	addEdge(m_currentNode, m_breakJumps.top());
-	m_currentNode = newNode();
+	solAssert(!!m_breakJump, "");
+	connect(m_currentNode, m_breakJump);
+	m_currentNode = newLabel();
 	return false;
 }
 
-bool CFG::visit(Continue const&)
+bool ControlFlowParser::visit(Continue const&)
 {
 	solAssert(!!m_currentNode, "");
-	solAssert(!m_continueJumps.empty(), "");
-	addEdge(m_currentNode, m_continueJumps.top());
-	m_currentNode = newNode();
+	solAssert(!!m_continueJump, "");
+	connect(m_currentNode, m_continueJump);
+	m_currentNode = newLabel();
 	return false;
 }
 
-bool CFG::visit(Throw const&)
+bool ControlFlowParser::visit(Throw const&)
 {
 	solAssert(!!m_currentNode, "");
-	solAssert(m_exceptionJump, "");
-	addEdge(m_currentNode, m_exceptionJump);
-	m_currentNode = newNode();
+	solAssert(!!m_cfg.m_currentFunctionFlow, "");
+	solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
+	connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+	m_currentNode = newLabel();
 	return false;
 }
 
-bool CFG::visit(Block const&)
+bool ControlFlowParser::visit(Block const&)
 {
 	solAssert(!!m_currentNode, "");
-	auto beforeBlock = m_currentNode;
-	m_currentNode = newNode();
-	addEdge(beforeBlock, m_currentNode);
+	createLabelHere();
 	return true;
 }
 
-void CFG::endVisit(Block const&)
+void ControlFlowParser::endVisit(Block const&)
 {
 	solAssert(!!m_currentNode, "");
-	auto blockEnd = m_currentNode;
-	m_currentNode = newNode();
-	addEdge(blockEnd, m_currentNode);
+	createLabelHere();
 }
 
-bool CFG::visit(Return const& _return)
+bool ControlFlowParser::visit(Return const& _return)
 {
-	solAssert(m_currentNode, "");
-	solAssert(m_returnJump, "");
-	addEdge(m_currentNode, m_returnJump);
+	solAssert(!!m_currentNode, "");
+	solAssert(!!m_cfg.m_currentFunctionFlow, "");
+	solAssert(!!m_cfg.m_currentFunctionFlow->exit, "");
 	// only the first return statement is interesting
 	if (!m_currentNode->block.returnStatement)
 		m_currentNode->block.returnStatement = &_return;
-	m_currentNode = newNode();
+	connect(m_currentNode, m_cfg.m_currentFunctionFlow->exit);
+	m_currentNode = newLabel();
 	return true;
 }
 
 
-bool CFG::visit(PlaceholderStatement const&)
+bool ControlFlowParser::visit(PlaceholderStatement const&)
 {
-	solAssert(m_currentModifierFlow, "");
-	auto placeholderEntry = newNode();
-	auto placeholderExit = newNode();
+	solAssert(!!m_currentNode, "");
+	solAssert(!!m_cfg.m_currentModifierFlow, "");
+	auto placeholderEntry = newLabel();
+	auto placeholderExit = newLabel();
 
-	addEdge(m_currentNode, placeholderEntry);
+	connect(m_currentNode, placeholderEntry);
 
-	m_currentModifierFlow->placeholders.emplace_back(placeholderEntry, placeholderExit);
+	m_cfg.m_currentModifierFlow->placeholders.emplace_back(placeholderEntry, placeholderExit);
 
 	m_currentNode = placeholderExit;
 	return false;
 }
 
-FunctionFlow const &CFG::functionFlow(FunctionDefinition const &_function) const
+bool ControlFlowParser::visitNode(ASTNode const& node)
+{
+	solAssert(!!m_currentNode, "");
+	if (auto const* expression = dynamic_cast<Expression const*>(&node))
+		m_currentNode->block.expressions.emplace_back(expression);
+	if (auto const* variableDeclaration = dynamic_cast<VariableDeclaration const*>(&node))
+		m_currentNode->block.variableDeclarations.emplace_back(variableDeclaration);
+	if (auto const* assembly = dynamic_cast<InlineAssembly const*>(&node))
+		m_currentNode->block.inlineAssemblyStatements.emplace_back(assembly);
+
+	return true;
+}
+
+bool ControlFlowParser::visit(FunctionCall const& _functionCall)
+{
+	solAssert(!!m_currentNode, "");
+	if (auto functionType = dynamic_pointer_cast<FunctionType const>(_functionCall.expression().annotation().type))
+		switch (functionType->kind())
+		{
+			case FunctionType::Kind::Revert:
+				solAssert(!!m_cfg.m_currentFunctionFlow, "");
+				solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
+				ASTNode::listAccept(_functionCall.arguments(), *this);
+				connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+				m_currentNode = newLabel();
+				return false;
+			case FunctionType::Kind::Require:
+			case FunctionType::Kind::Assert:
+			{
+				solAssert(!!m_cfg.m_currentFunctionFlow, "");
+				solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
+				ASTNode::listAccept(_functionCall.arguments(), *this);
+				connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+				auto nextNode = newLabel();
+				connect(m_currentNode, nextNode);
+				m_currentNode = nextNode;
+				return false;
+			}
+			default:
+				break;
+		}
+	return ASTConstVisitor::visit(_functionCall);
+}
+
+bool CFG::constructFlow(ASTNode const& _astRoot)
+{
+	_astRoot.accept(*this);
+	return Error::containsOnlyWarnings(m_errorReporter.errors());
+}
+
+
+bool CFG::visit(ModifierDefinition const& _modifier)
+{
+	m_currentModifierFlow = make_shared<ModifierFlow>(newNode(), newNode(), newNode());
+	m_currentFunctionFlow = std::static_pointer_cast<FunctionFlow>(m_currentModifierFlow);
+	m_modifierControlFlow[&_modifier] = m_currentModifierFlow;
+
+	ControlFlowParser::createFlowFromTo(*this, m_currentFunctionFlow->entry, m_currentFunctionFlow->exit, _modifier);
+
+	m_currentModifierFlow.reset();
+	m_currentFunctionFlow.reset();
+
+	return false;
+}
+
+bool CFG::visit(FunctionDefinition const& _function)
+{
+	// TODO: insert modifiers into function control flow after parsing the AST.
+
+	m_currentFunctionFlow = make_shared<FunctionFlow>(newNode(), newNode(), newNode());
+	m_functionControlFlow[&_function] = m_currentFunctionFlow;
+
+	ControlFlowParser::createFlowFromTo(*this, m_currentFunctionFlow->entry, m_currentFunctionFlow->exit, _function);
+
+	m_currentFunctionFlow.reset();
+
+	return false;
+}
+
+FunctionFlow const& CFG::functionFlow(FunctionDefinition const& _function) const
 {
 	solAssert(m_functionControlFlow.count(&_function), "");
 	return *m_functionControlFlow.find(&_function)->second;
-}
-
-bool CFG::visitNode(ASTNode const& node)
-{
-	if (m_currentNode)
-	{
-		if (auto const* expression = dynamic_cast<Expression const*>(&node))
-			m_currentNode->block.expressions.emplace_back(expression);
-		if (auto const* variableDeclaration = dynamic_cast<VariableDeclaration const*>(&node))
-			m_currentNode->block.variableDeclarations.emplace_back(variableDeclaration);
-		if (auto const* assembly = dynamic_cast<InlineAssembly const*>(&node))
-			m_currentNode->block.inlineAssemblyStatements.emplace_back(assembly);
-
-	}
-	return true;
 }
 
 CFGNode* CFG::newNode()
 {
 	m_nodes.emplace_back(new CFGNode());
 	return m_nodes.back().get();
-}
-
-void CFG::addEdge(CFGNode* _from, CFGNode* _to)
-{
-	solAssert(_from, "");
-	solAssert(_to, "");
-	_from->exits.push_back(_to);
-	_to->entries.push_back(_from);
-}
-
-bool CFG::visit(FunctionCall const& _functionCall)
-{
-	if (m_currentNode)
-	{
-		if (auto functionType = dynamic_pointer_cast<FunctionType const>(_functionCall.expression().annotation().type))
-			switch (functionType->kind())
-			{
-				case FunctionType::Kind::Revert:
-					solAssert(m_exceptionJump, "");
-					ASTNode::listAccept(_functionCall.arguments(), *this);
-					addEdge(m_currentNode, m_exceptionJump);
-					m_currentNode = newNode();
-					return false;
-				case FunctionType::Kind::Require:
-				case FunctionType::Kind::Assert:
-				{
-					solAssert(m_exceptionJump, "");
-					ASTNode::listAccept(_functionCall.arguments(), *this);
-					addEdge(m_currentNode, m_exceptionJump);
-					auto nextNode = newNode();
-					addEdge(m_currentNode, nextNode);
-					m_currentNode = nextNode;
-					return false;
-				}
-				default:
-					break;
-			}
-	}
-	return ASTConstVisitor::visit(_functionCall);
 }
