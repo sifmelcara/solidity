@@ -1719,6 +1719,32 @@ bool TypeChecker::visit(FunctionCall const& _functionCall)
 		}
 	}
 
+	if (functionType->takesSinglePackedBytesParameter())
+	{
+		if (arguments.size() > 1)
+		{
+			string msg =
+				"This function only accepts a single 'bytes' argument. Please use the "
+				"abi.* functions to encode the data.";
+			if (v050)
+				m_errorReporter.typeError(_functionCall.location(), msg);
+			else
+				m_errorReporter.warning(_functionCall.location(), msg);
+		}
+		else if (arguments.size() == 1 && !type(*arguments.front())->isImplicitlyConvertibleTo(ArrayType(DataLocation::Memory)))
+		{
+			string msg =
+				"Invalid type for argument in function call. "
+				"Invalid implicit conversion from " +
+				type(*arguments.front())->toString() +
+				" to bytes memory requested.";
+			if (v050)
+				m_errorReporter.typeError(_functionCall.location(), msg);
+			else
+				m_errorReporter.warning(_functionCall.location(), msg);
+		}
+	}
+
 	if (functionType->takesArbitraryParameters() && arguments.size() < parameterTypes.size())
 	{
 		solAssert(_functionCall.annotation().kind == FunctionCallKind::FunctionCall, "");
