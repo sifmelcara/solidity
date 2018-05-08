@@ -1,5 +1,8 @@
 ### 0.5.0 (unreleased)
 
+Breaking:
+ * Remove ``constant`` as function state mutability modifer.
+
 Features:
 
 
