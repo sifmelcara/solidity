@@ -1722,26 +1722,17 @@ void ExpressionCompiler::appendShiftOperatorCode(Token::Value _operator, Type co
 			m_context << Instruction::SAR;
 		else
 		{
-			// if signed and negative, calculate
-			// ~((~value_to_shift) / (2**shift_amount))
 			if (c_valueSigned)
-			{
-				// stack: value_to_shift shift_amount
-				m_context << u256(0) << Instruction::DUP3 << Instruction::SLT;
-				// stack: value_to_shift shift_amount (value_to_shift < 0)
-				m_context << u256(0) << Instruction::SUB;
-				// stack: value_to_shift shift_amount -(value_to_shift < 0)
-				m_context << Instruction::DUP1;
-				// stack: value_to_shift shift_amount -(value_to_shift < 0) -(value_to_shift < 0)
-				m_context << Instruction::SWAP3;
-				// stack: -(value_to_shift < 0) shift_amount -(value_to_shift < 0) value_to_shift
-				m_context << Instruction::XOR;
-				// stack: -(value_to_shift < 0) shift_amount [~]value_to_shift
-				m_context << Instruction::SWAP1;
-			}
-			m_context << u256(2) << Instruction::EXP << Instruction::SWAP1 << Instruction::DIV;
-			if (c_valueSigned)
-				m_context << Instruction::XOR;
+				m_context.appendInlineAssembly(R"({
+					let xor_mask := sub(0, slt(value_to_shift, 0))
+					value_to_shift := xor(div(xor(value_to_shift, xor_mask), exp(2, shift_amount)), xor_mask)
+				})", {"value_to_shift", "shift_amount"});
+			else
+				m_context.appendInlineAssembly(R"({
+					value_to_shift := div(value_to_shift, exp(2, shift_amount))
+				})", { "value_to_shift", "shift_amount"  });
+			m_context << Instruction::POP;
+
 		}
 		break;
 	case Token::SHR:
