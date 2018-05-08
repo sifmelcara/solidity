@@ -884,7 +884,10 @@ bool RationalNumberType::isImplicitlyConvertibleTo(Type const& _convertTo) const
 bool RationalNumberType::isExplicitlyConvertibleTo(Type const& _convertTo) const
 {
 	TypePointer mobType = mobileType();
-	return mobType && mobType->isExplicitlyConvertibleTo(_convertTo);
+	return
+		(mobType && mobType->isExplicitlyConvertibleTo(_convertTo)) ||
+		(isZero() && _convertTo.category() == Category::FixedBytes)
+	;
 }
 
 TypePointer RationalNumberType::unaryOperatorResult(Token::Value _operator) const
