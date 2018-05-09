@@ -1,5 +1,9 @@
 ### 0.5.0 (unreleased)
+
 Features:
+
+
+Bugfixes:
  * Type Checker: Disallow arithmetic operations for Boolean variables.
 
 
@@ -7,11 +11,13 @@ Features:
 
 Features:
  * Build System: Update internal dependency of jsoncpp to 1.8.4, which introduces more strictness and reduces memory usage.
+ * Code Generator: Use native shift instructions on target Constantinople.
  * Optimizer: Remove unnecessary masking of the result of known short instructions (``ADDRESS``, ``CALLER``, ``ORIGIN`` and ``COINBASE``).
  * Type Checker: Deprecate the ``years`` unit denomination and raise a warning for it (or an error as experimental 0.5.0 feature).
  * Type Checker: Make literals (without explicit type casting) an error for tight packing as experimental 0.5.0 feature.
 
 Bugfixes:
+ * Type Checker: Show proper error when trying to ``emit`` a non-event.
  * Type Checker: Warn about empty tuple components (this will turn into an error with version 0.5.0).
 
 
