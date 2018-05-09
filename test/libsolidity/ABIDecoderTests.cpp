@@ -579,7 +579,7 @@ BOOST_AUTO_TEST_CASE(struct_simple)
 				a = s.a;
 				b = s.b;
 				c = s.c;
-				d = uint(s.d);
+				d = uint(uint16(s.d));
 			}
 		}
 	)";
@@ -818,8 +818,8 @@ BOOST_AUTO_TEST_CASE(return_dynamic_types_cross_call_advanced)
 				a = "1234567890123456789012345678901234567890";
 				b = uint(-1);
 				c = new bytes20[](4);
-				c[0] = bytes20(1234);
-				c[3] = bytes20(6789);
+				c[0] = bytes20(uint160(1234));
+				c[3] = bytes20(uint160(6789));
 				d = 0x1234;
 			}
 			function f() public returns (bytes, uint, bytes20[], uint) {
