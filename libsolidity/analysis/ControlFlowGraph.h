@@ -31,26 +31,32 @@ namespace dev
 namespace solidity
 {
 
-/// Basic Control Flow Block.
-/// Basic block of control flow. Consists of a set of AST nodes
-/// for which control flow is always linear.
+/** Basic Control Flow Block.
+ * Basic block of control flow. Consists of a set of (unordered) AST nodes
+ * for which control flow is always linear. A basic control flow block
+ * encompasses at most one scope. Reverts are considered to break the control
+ * flow.
+ * @todo Handle function calls correctly. So far function calls are not considered
+ * to change the control flow.
+ */
 struct ControlFlowBlock
 {
-	/// All variable declarations executed in this control flow block.
+	/// All variable declarations inside this control flow block.
 	std::vector<VariableDeclaration const*> variableDeclarations;
-	/// All expressions executed in this control flow block (this includes all subexpressions!).
+	/// All expressions inside this control flow block (this includes all subexpressions!).
 	std::vector<Expression const*> expressions;
-	/// All inline assembly statements executed in this control flow block.
+	/// All inline assembly statements inside in this control flow block.
 	std::vector<InlineAssembly const*> inlineAssemblyStatements;
 	/// If control flow returns in this node, the return statement is stored in returnStatement,
 	/// otherwise returnStatement is nullptr.
 	Return const* returnStatement = nullptr;
 };
 
-/// Node of the Control Flow Graph.
-/// The control flow is a directed graph connecting control flow blocks.
-/// An arc between two nodes indicates that the control flow can possibly
-/// move from its start node to its end node during execution.
+/** Node of the Control Flow Graph.
+  * The control flow is a directed graph connecting control flow blocks.
+  * An arc between two nodes indicates that the control flow can possibly
+  * move from its start node to its end node during execution.
+  */
 struct CFGNode
 {
 	/// Entry nodes. All CFG nodes from which control flow may move into this node.
@@ -62,32 +68,38 @@ struct CFGNode
 	ControlFlowBlock block;
 };
 
-/// Describes the control flow of a function.
+/** Describes the control flow of a function. */
 struct FunctionFlow
 {
 	FunctionFlow(CFGNode* _entry, CFGNode* _exit, CFGNode* _exception):
 		entry(_entry), exit(_exit), exception(_exception) {}
+	virtual ~FunctionFlow() {}
 	/// Entry node. Control flow of the function starts here.
-	/// This node does not have any entries.
+	/// This node is empty and does not have any entries.
 	CFGNode* entry;
-	/// Exit node. Control flow of the function ends here.
-	/// This node does not have any exits, but may have multiple entries
+	/// Exit node. All non-reverting control flow of the function ends here.
+	/// This node is empty and does not have any exits, but may have multiple entries
 	/// (e.g. all return statements of the function).
 	CFGNode* exit;
 	/// Exception node. Control flow of the function in case of revert.
-	/// This node does not have any exists, but may have multiple entries
-	/// (e.g. all revert, assert and require statements).
+	/// This node is empty does not have any exists, but may have multiple entries
+	/// (e.g. all assert, require, revert and throw statements).
 	CFGNode* exception;
 };
 
-/// Describes the control flow of a modifier.
-/// Inherits all members from FunctionFlow.
-struct ModifierFlow : FunctionFlow
+/** Describes the control flow of a modifier.
+ * Every placeholder breaks the control flow. The node preceding the
+ * placeholder is assigned placeholderEntry as exit and the node
+ * following the placeholder is assigned placeholderExit as entry.
+ */
+struct ModifierFlow: FunctionFlow
 {
 	template<typename... Args>
 	ModifierFlow(Args&&... args): FunctionFlow(std::forward<Args>(args)...) {}
 
+	/// Control flow leading towards a placeholder exit in placeholderEntry.
 	CFGNode* placeholderEntry = nullptr;
+	/// Control flow coming from a placeholder enter from placeholderExit.
 	CFGNode* placeholderExit = nullptr;
 };
 
@@ -117,9 +129,7 @@ private:
 
 	ErrorReporter& m_errorReporter;
 
-	/// Maps function definitions to their control flow.
 	std::map<FunctionDefinition const*, std::shared_ptr<FunctionFlow>> m_functionControlFlow;
-	/// Maps modifier definitions to their control flow.
 	std::map<ModifierDefinition const*, std::shared_ptr<ModifierFlow>> m_modifierControlFlow;
 
 	/// List of nodes.

@@ -29,7 +29,7 @@ namespace dev
 namespace solidity
 {
 
-/// Helper class that parses the control flow of a non-top-level ASTNode.
+/** Helper class that parses the control flow of a non-top-level ASTNode. */
 class ControlFlowParser: private ASTConstVisitor
 {
 public:
