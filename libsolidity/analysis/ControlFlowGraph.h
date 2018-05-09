@@ -71,8 +71,8 @@ struct CFGNode
 /** Describes the control flow of a function. */
 struct FunctionFlow
 {
-	FunctionFlow(CFGNode* _entry, CFGNode* _exit, CFGNode* _exception):
-		entry(_entry), exit(_exit), exception(_exception) {}
+	FunctionFlow(CFGNode* _entry, CFGNode* _exit, CFGNode* _revert):
+		entry(_entry), exit(_exit), revert(_revert) {}
 	virtual ~FunctionFlow() {}
 	/// Entry node. Control flow of the function starts here.
 	/// This node is empty and does not have any entries.
@@ -81,10 +81,10 @@ struct FunctionFlow
 	/// This node is empty and does not have any exits, but may have multiple entries
 	/// (e.g. all return statements of the function).
 	CFGNode* exit;
-	/// Exception node. Control flow of the function in case of revert.
+	/// Revert node. Control flow of the function in case of revert.
 	/// This node is empty does not have any exists, but may have multiple entries
 	/// (e.g. all assert, require, revert and throw statements).
-	CFGNode* exception;
+	CFGNode* revert;
 };
 
 /** Describes the control flow of a modifier.

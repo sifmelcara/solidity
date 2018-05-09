@@ -338,8 +338,8 @@ bool ControlFlowParser::visit(Throw const&)
 {
 	solAssert(!!m_currentNode, "");
 	solAssert(!!m_cfg.m_currentFunctionFlow, "");
-	solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
-	connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+	solAssert(!!m_cfg.m_currentFunctionFlow->revert, "");
+	connect(m_currentNode, m_cfg.m_currentFunctionFlow->revert);
 	m_currentNode = newLabel();
 	return false;
 }
@@ -405,18 +405,18 @@ bool ControlFlowParser::visit(FunctionCall const& _functionCall)
 		{
 			case FunctionType::Kind::Revert:
 				solAssert(!!m_cfg.m_currentFunctionFlow, "");
-				solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
+				solAssert(!!m_cfg.m_currentFunctionFlow->revert, "");
 				ASTNode::listAccept(_functionCall.arguments(), *this);
-				connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+				connect(m_currentNode, m_cfg.m_currentFunctionFlow->revert);
 				m_currentNode = newLabel();
 				return false;
 			case FunctionType::Kind::Require:
 			case FunctionType::Kind::Assert:
 			{
 				solAssert(!!m_cfg.m_currentFunctionFlow, "");
-				solAssert(!!m_cfg.m_currentFunctionFlow->exception, "");
+				solAssert(!!m_cfg.m_currentFunctionFlow->revert, "");
 				ASTNode::listAccept(_functionCall.arguments(), *this);
-				connect(m_currentNode, m_cfg.m_currentFunctionFlow->exception);
+				connect(m_currentNode, m_cfg.m_currentFunctionFlow->revert);
 				auto nextNode = newLabel();
 				connect(m_currentNode, nextNode);
 				m_currentNode = nextNode;
@@ -501,8 +501,8 @@ void CFG::applyModifierFlowToFunctionFlow(
 {
 	map<CFGNode*, CFGNode*> oldToNew;
 
-	// inherit the exception node of the function
-	oldToNew[_modifierFlow.exception] = _functionFlow->exception;
+	// inherit the revert node of the function
+	oldToNew[_modifierFlow.revert] = _functionFlow->revert;
 
 	// replace the placeholder nodes by the function entry and exit
 	oldToNew[_modifierFlow.placeholderEntry] = _functionFlow->entry;
